@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>La Villa del Juicio - v0.8.5 PRE-FINAL</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap');
+        body { margin: 0; background: #000; color: #d4c5a3; font-family: 'MedievalSharp', cursive; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        #gameContainer { position: relative; width: 800px; height: 600px; border: 4px solid #5c4033; background: #1a1a1a; outline: none; box-shadow: 0 0 50px rgba(0,0,0,1); }
+        canvas { display: block; }
+        .ui { position: absolute; inset: 0; pointer-events: none; }
+        .menu { position: absolute; inset: 0; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: auto; z-index: 100; }
+        .btn { background: #8b4513; color: white; border: 2px solid #aaa; padding: 12px 24px; cursor: pointer; font-family: inherit; margin: 10px; font-size: 18px; }
+        .btn:hover { background: #a0522d; box-shadow: 0 0 10px gold; }
+        input { padding: 10px; font-family: inherit; margin: 5px; width: 250px; text-align: center; background: #222; color: #fff; border: 1px solid #8b4513; pointer-events: auto; }
+        
+        #chatDisplay { position: absolute; bottom: 60px; left: 20px; width: 320px; height: 140px; background: rgba(0,0,0,0.4); pointer-events: none; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 5px; }
+        #chatInput { position: absolute; bottom: 20px; left: 20px; width: 320px; height: 35px; pointer-events: auto; display: none; background: #000; color: white; border: 2px solid #8b4513; padding-left: 10px; font-family: inherit; }
+        
+        #hud { position: absolute; top: 15px; width: 100%; text-align: center; font-size: 28px; color: gold; text-shadow: 2px 2px #000; letter-spacing: 2px; }
+        .banner { position: absolute; top: 30%; width: 100%; text-align: center; font-size: 60px; color: red; display: none; pointer-events: none; z-index: 200; text-shadow: 0 0 20px black; }
+        
+        #voteMenu { display: none; background: rgba(0,0,0,0.95); padding: 30px; border: 4px double #ff0000; pointer-events: auto; text-align: center; }
+        .vote-item { background: #331a00; margin: 8px; padding: 15px; cursor: pointer; border: 1px solid #8b4513; color: #fff; font-size: 20px; min-width: 200px; }
+        .vote-item:hover { background: #5d4037; border-color: red; }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer" tabindex="0">
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+    
+    <div class="ui">
+        <div id="mainMenu" class="menu">
+            <h1 style="color: #ff4444; font-size: 55px; margin: 0; text-shadow: 3px 3px black;">LA VILLA DEL JUICIO</h1>
+            <p>v0.8.5 - Online Multiplayer</p>
+            <input type="text" id="nodeName" placeholder="Tu Nombre" value="Bloxxer">
+            <div style="margin: 15px;">
+                <button class="btn" onclick="setGender('M')">👦 Caballero</button>
+                <button class="btn" onclick="setGender('F')">👧 Dama</button>
+            </div>
+            <button class="btn" onclick="hostRoom()">CREAR VILLA (Host)</button>
+            <input type="text" id="joinId" placeholder="ID de la Villa">
+            <button class="btn" onclick="joinRoom()">UNIRSE A VILLA</button>
+            <p id="statusLog" style="color: #666;">Iniciando sistemas...</p>
+        </div>
+
+        <div id="lobbyMenu" class="menu" style="display:none;">
+            <h2 style="font-size: 35px;">SALA DE ESPERA</h2>
+            <div id="playerList" style="margin: 20px; font-size: 22px; color: gold;"></div>
+            <p id="roomCodeDisplay" style="color:cyan; cursor:pointer; font-size: 14px;" onclick="copyID()">[Haz clic para copiar ID y enviarlo a tus amigos]</p>
+            <button id="startBtn" class="btn" style="display:none; font-size: 24px;" onclick="serverStartGame()">¡INICIAR PARTIDA!</button>
+        </div>
+
+        <div id="voteMenu" class="menu">
+            <h2 style="color:red; font-size: 40px;">JUICIO PÚBLICO</h2>
+            <p>¿Quién es el asesino? El más votado irá a la guillotina.</p>
+            <div id="voteOptions"></div>
+        </div>
+
+        <div id="roleBanner" class="banner">ERES EL ASESINO</div>
+        <div id="hud">ESPERANDO HOST...</div>
+        <div id="chatDisplay"></div>
+        <input type="text" id="chatInput" placeholder="Escribe un mensaje...">
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const chatInput = document.getElementById('chatInput');
+    
+    let peer, myId, conn, isHost = false, gameStarted = false;
+    let players = {}, connections = [];
+    let phase = "DAY"; 
+    let phaseTimer = 20;
+    let myData = { id: "", x: 400, y: 500, name: "", gender: "M", role: "Civil", scene: "WORLD", alive: true, chatMsg: "" };
+    let deadBodies = [];
+
+    const houses = [
+        { id: 1, x: 120, y: 120, w: 100, h: 80, color: '#4e342e' },
+        { id: 2, x: 580, y: 120, w: 100, h: 80, color: '#3e2723' }
+    ];
+
+    function initPeer() {
+        peer = new Peer();
+        peer.on('open', id => { myId = id; myData.id = id; document.getElementById('statusLog').innerText = "Conexión Establecida."; });
+        peer.on('connection', c => { if(isHost) { connections.push(c); c.on('data', data => handleData(data, c)); }});
+    }
+
+    function hostRoom() {
+        isHost = true; myData.name = document.getElementById('nodeName').value;
+        document.getElementById('mainMenu').style.display = 'none';
+        document.getElementById('lobbyMenu').style.display = 'flex';
+        document.getElementById('startBtn').style.display = 'block';
+        players[myId] = myData; updateLobby(); gameLoop();
+    }
+
+    function joinRoom() {
+        const tid = document.getElementById('joinId').value;
+        if(!tid) return alert("ID necesario");
+        myData.name = document.getElementById('nodeName').value;
+        conn = peer.connect(tid);
+        conn.on('open', () => {
+            isHost = false; document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('lobbyMenu').style.display = 'flex';
+            conn.on('data', data => handleData(data)); gameLoop();
+        });
+    }
+
+    function handleData(data, sender) {
+        if(data.type === 'update' && isHost) { players[data.id] = data.state; broadcast({type:'sync', players, bodies: deadBodies}); }
+        if(data.type === 'sync') { players = data.players; deadBodies = data.bodies; updateLobby(); }
+        if(data.type === 'start') { applyStart(data.roles); }
+        if(data.type === 'chat') handleChat(data);
+        if(data.type === 'kill') { 
+            players[data.targetId].alive = false; 
+            deadBodies.push({x: players[data.targetId].x, y: players[data.targetId].y, scene: players[data.targetId].scene});
+        }
+        if(data.type === 'phase') { phase = data.phase; updateHUD(); }
+    }
+
+    function broadcast(data) { connections.forEach(c => { if(c.open) c.send(data); }); }
+
+    function applyStart(roles) {
+        gameStarted = true; myData.role = roles[myId];
+        document.getElementById('lobbyMenu').style.display = 'none';
+        chatInput.style.display = 'block';
+        if(myData.role === 'Asesino') {
+            document.getElementById('roleBanner').style.display = 'block';
+            setTimeout(() => document.getElementById('roleBanner').style.display='none', 4000);
+        }
+        if(isHost) startCycle();
+    }
+
+    function startCycle() {
+        // Ciclo automático (Host)
+        setTimeout(() => { 
+            phase = "NIGHT"; broadcast({type:'phase', phase}); 
+            setTimeout(() => {
+                phase = "DAY"; broadcast({type:'phase', phase});
+                if(deadBodies.length > 0) startVotingSystem();
+                else startCycle();
+            }, 12000);
+        }, 20000);
+    }
+
+    function startVotingSystem() {
+        phase = "VOTING"; broadcast({type:'phase', phase});
+        document.getElementById('voteMenu').style.display = 'flex';
+        const opts = document.getElementById('voteOptions');
+        opts.innerHTML = "";
+        Object.values(players).forEach(p => {
+            if(p.alive) {
+                let d = document.createElement('div'); d.className = 'vote-item';
+                d.innerText = p.name; d.onclick = () => { 
+                    document.getElementById('voteMenu').style.display='none'; 
+                    deadBodies = []; // Limpiar cuerpos tras el juicio
+                    startCycle(); 
+                };
+                opts.appendChild(d);
+            }
+        });
+    }
+
+    function updateHUD() {
+        let h = document.getElementById('hud');
+        if(phase === "DAY") { h.innerText = "🌞 DÍA DE SOSPECHAS"; h.style.color = "gold"; }
+        else if(phase === "NIGHT") { h.innerText = "🌙 NOCHE DE MIEDO"; h.style.color = "cyan"; }
+        else { h.innerText = "⚖️ EL JUICIO"; h.style.color = "red"; }
+    }
+
+    function gameLoop() {
+        if(gameStarted && myData.alive) {
+            let spd = 3.8;
+            if(keys['w']) myData.y -= spd; if(keys['s']) myData.y += spd;
+            if(keys['a']) myData.x -= spd; if(keys['d']) myData.x += spd;
+            
+            // Puertas
+            if(myData.scene === "WORLD") {
+                houses.forEach(h => {
+                    if(myData.x > h.x+40 && myData.x < h.x+60 && myData.y > h.y+h.h-10 && myData.y < h.y+h.h+10) {
+                        myData.scene = "HOUSE_"+h.id; myData.x = 400; myData.y = 520;
+                    }
+                });
+            } else if(myData.y > 550) { myData.scene = "WORLD"; myData.y = 200; }
+
+            // Ataque Asesino
+            if(keys[' '] && phase === "NIGHT" && myData.role === "Asesino") {
+                Object.values(players).forEach(p => {
+                    if(p.id !== myId && p.alive && p.scene === myData.scene) {
+                        if(Math.hypot(p.x - myData.x, p.y - myData.y) < 45) {
+                            if(isHost) {
+                                p.alive = false;
+                                deadBodies.push({x: p.x, y: p.y, scene: p.scene});
+                            } else conn.send({type:'kill', targetId: p.id});
+                        }
+                    }
+                });
+            }
+        }
+
+        if(isHost) { players[myId] = myData; broadcast({type:'sync', players, bodies: deadBodies}); }
+        else if(conn && conn.open) conn.send({type:'update', id:myId, state:myData});
+
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function draw() {
+        ctx.clearRect(0,0,800,600);
+        if(!gameStarted) return;
+
+        // Fondo según escena y fase
+        if(myData.scene === "WORLD") {
+            ctx.fillStyle = phase === "NIGHT" ? "#050a05" : "#2e7d32";
+            ctx.fillRect(0,0,800,600);
+            // Guillotina
+            ctx.fillStyle = "#222"; ctx.fillRect(392, 260, 16, 80);
+            ctx.fillStyle = "#666"; ctx.fillRect(380, 260, 40, 10); // Cuchilla
+            houses.forEach(h => {
+                ctx.fillStyle = h.color; ctx.fillRect(h.x, h.y, h.w, h.h);
+                ctx.fillStyle = "#000"; ctx.fillRect(h.x+40, h.y+h.h-15, 20, 15);
+            });
+            // Dibujar cuerpos
+            deadBodies.forEach(b => {
+                if(b.scene === "WORLD") { ctx.fillStyle = "red"; ctx.font = "20px Arial"; ctx.fillText("❌", b.x-10, b.y+10); }
+            });
+        } else {
+            ctx.fillStyle = "#1a0d00"; ctx.fillRect(0,0,800,600);
+            ctx.fillStyle = "#d7ccc8"; ctx.fillRect(50,50,700,500);
+            ctx.fillStyle = "#3e2723"; ctx.fillRect(350, 550, 100, 10); // Alfombra salida
+        }
+
+        // Jugadores
+        Object.values(players).forEach(p => {
+            if(p.scene === myData.scene && p.alive) {
+                // Sombra
+                ctx.fillStyle = "rgba(0,0,0,0.3)"; ctx.beginPath(); ctx.ellipse(p.x, p.y+12, 12, 5, 0, 0, Math.PI*2); ctx.fill();
+                // Cuerpo
+                ctx.fillStyle = p.gender === 'M' ? '#1e88e5' : '#8e24aa';
+                ctx.beginPath(); ctx.arc(p.x, p.y, 14, 0, Math.PI*2); ctx.fill();
+                // Moños Dama
+                if(p.gender === 'F') {
+                    ctx.fillStyle = "#f06292";
+                    ctx.beginPath(); ctx.arc(p.x-11, p.y-11, 6, 0, Math.PI*2); ctx.fill();
+                    ctx.beginPath(); ctx.arc(p.x+11, p.y-11, 6, 0, Math.PI*2); ctx.fill();
+                }
+                // Nombre
+                ctx.fillStyle = "white"; ctx.font = "bold 14px MedievalSharp"; ctx.textAlign = "center";
+                ctx.fillText(p.name, p.x, p.y-25);
+                // Burbuja de chat si está hablando
+                if(p.chatMsg) {
+                    ctx.fillStyle = "white"; ctx.fillRect(p.x-40, p.y-60, 80, 20);
+                    ctx.fillStyle = "black"; ctx.font = "10px Arial"; ctx.fillText(p.chatMsg.substring(0,15), p.x, p.y-46);
+                }
+            }
+        });
+
+        // Oscuridad de noche
+        if(phase === "NIGHT" && myData.scene === "WORLD") {
+            let grad = ctx.createRadialGradient(myData.x, myData.y, 50, myData.x, myData.y, 250);
+            grad.addColorStop(0, "rgba(0,0,0,0)");
+            grad.addColorStop(1, "rgba(0,0,0,0.9)");
+            ctx.fillStyle = grad; ctx.fillRect(0,0,800,600);
+        }
+    }
+
+    const keys = {};
+    window.onkeydown = e => { if(document.activeElement === chatInput && e.key === 'Enter') sendChat(); keys[e.key.toLowerCase()] = true; };
+    window.onkeyup = e => keys[e.key.toLowerCase()] = false;
+
+    function handleChat(data) {
+        const sender = players[data.senderId];
+        if(sender && sender.scene === myData.scene) {
+            sender.chatMsg = data.msg; setTimeout(() => sender.chatMsg = "", 3000);
+            const div = document.createElement('div');
+            div.style.color = sender.gender === 'F' ? '#f06292' : '#64b5f6';
+            div.innerHTML = `<b>${data.name}:</b> ${data.msg}`;
+            document.getElementById('chatDisplay').appendChild(div);
+            document.getElementById('chatDisplay').scrollTop = 9999;
+        }
+    }
+
+    function sendChat() {
+        const m = chatInput.value; if(!m) return;
+        const d = {type:'chat', senderId:myId, name:myData.name, msg:m};
+        if(isHost) { broadcast(d); handleChat(d); } else conn.send(d);
+        chatInput.value = "";
+    }
+
+    function serverStartGame() {
+        const ids = Object.keys(players);
+        if(ids.length < 2) return alert("Necesitas al menos otro jugador.");
+        const roles = {}; const ass = ids[Math.floor(Math.random()*ids.length)];
+        ids.forEach(id => roles[id] = (id === ass ? 'Asesino' : 'Civil'));
+        broadcast({type:'start', roles}); applyStart(roles);
+    }
+
+    function setGender(g) { myData.gender = g; alert("Cuerpo de " + (g==='M'?'Caballero':'Dama') + " seleccionado.");}
+    function updateLobby() { document.getElementById('playerList').innerHTML = Object.values(players).map(p => `<div>• ${p.name}</div>`).join(''); }
+    function copyID() { navigator.clipboard.writeText(myId); alert("ID Copiado. Pásalo a tus amigos."); }
+    initPeer();
+</script>
+</body>
+</html>
